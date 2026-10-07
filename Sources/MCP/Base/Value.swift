@@ -95,7 +95,9 @@ extension Value: Codable {
         } else if let value = try? container.decode(Double.self) {
             self = .double(value)
         } else if let value = try? container.decode(String.self) {
-            if Data.isDataURL(string: value),
+            // Only a string with the scheme can be a data URL, and the check builds its regex
+            // anew on every call, so every other string skips it.
+            if value.hasPrefix("data:"), Data.isDataURL(string: value),
                 case let (mimeType, data)? = Data.parseDataURL(value)
             {
                 self = .data(mimeType: mimeType, data)
