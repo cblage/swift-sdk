@@ -264,6 +264,10 @@ public actor Server {
                                 ?? MCPError.internalError(error.localizedDescription)
                         )
                         try? await send(response)
+                        // A request the transport delivered settles even when it could not be decoded
+                        if let requestID {
+                            await settle(requestID, .responded)
+                        }
                     }
                 }
             } catch {
@@ -729,7 +733,9 @@ public actor Server {
 
     // MARK: - Request and Message Handling
 
-    /// Handle a request and either send the response immediately or return it
+    /// Handle a request and either send the response immediately or return it, then tell a
+    /// ``RequestSettlementObserving`` transport how the request settled — once, on every exit,
+    /// a cancellation that sends no response and a dispatch failure included.
     ///
     /// - Parameters:
     ///   - request: The request to handle
@@ -738,12 +744,34 @@ public actor Server {
     private func handleRequest(_ request: Request<AnyMethod>, sendResponse: Bool = true)
         async throws -> Response<AnyMethod>?
     {
+        let outcome: (response: Response<AnyMethod>?, settlement: RequestSettlement)
+        do {
+            outcome = try await dispatchRequest(request, sendResponse: sendResponse)
+        } catch {
+            await settle(request.id, .failed)
+            throw error
+        }
+        await settle(request.id, outcome.settlement)
+        return outcome.response
+    }
+
+    private func settle(_ id: ID, _ settlement: RequestSettlement) async {
+        await (connection as? any RequestSettlementObserving)?
+            .requestDidSettle(id: id, outcome: settlement)
+    }
+
+    /// Dispatch a request to its handler and send or return the response, reporting how it settled
+    private func dispatchRequest(_ request: Request<AnyMethod>, sendResponse: Bool)
+        async throws -> (response: Response<AnyMethod>?, settlement: RequestSettlement)
+    {
         // Check if this is a pre-processed error request (empty method)
         if request.method.isEmpty && !sendResponse {
             // This is a placeholder for an invalid request that couldn't be parsed in batch mode
-            return AnyMethod.response(
-                id: request.id,
-                error: MCPError.invalidRequest("Invalid batch item format")
+            return (
+                AnyMethod.response(
+                    id: request.id,
+                    error: MCPError.invalidRequest("Invalid batch item format")
+                ), .responded
             )
         }
 
@@ -772,10 +800,10 @@ public actor Server {
 
             if sendResponse {
                 try await send(response)
-                return nil
+                return (nil, .responded)
             }
 
-            return response
+            return (response, .responded)
         }
 
         // Ask the transport for the originating HTTP request so handlers can observe
@@ -825,13 +853,13 @@ public actor Server {
 
             if sendResponse {
                 try await send(response)
-                return nil
+                return (nil, .responded)
             }
 
-            return response
+            return (response, .responded)
         } catch is CancellationError {
             // Request was cancelled, don't send a response per MCP spec
-            return nil
+            return (nil, .cancelled)
         } catch {
             // This should not happen as errors are caught in the task
             let mcpError = error as? MCPError ?? MCPError.internalError(error.localizedDescription)
@@ -839,10 +867,10 @@ public actor Server {
 
             if sendResponse {
                 try await send(response)
-                return nil
+                return (nil, .responded)
             }
 
-            return response
+            return (response, .responded)
         }
     }
 

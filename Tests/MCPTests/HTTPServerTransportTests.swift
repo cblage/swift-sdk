@@ -24,12 +24,12 @@ private func makeInitializeBody(id: String = "1") -> Data {
     return try! JSONSerialization.data(withJSONObject: json)
 }
 
-private func makeNotificationBody(method: String = "notifications/initialized") -> Data {
+func makeNotificationBody(method: String = "notifications/initialized") -> Data {
     let json: [String: Any] = ["jsonrpc": "2.0", "method": method]
     return try! JSONSerialization.data(withJSONObject: json)
 }
 
-private func makeRequestBody(id: String = "2", method: String = "tools/list") -> Data {
+func makeRequestBody(id: String = "2", method: String = "tools/list") -> Data {
     let json: [String: Any] = [
         "jsonrpc": "2.0",
         "id": id,
@@ -39,7 +39,7 @@ private func makeRequestBody(id: String = "2", method: String = "tools/list") ->
     return try! JSONSerialization.data(withJSONObject: json)
 }
 
-private func makeResponseBody(id: String = "2") -> Data {
+func makeResponseBody(id: String = "2") -> Data {
     let json: [String: Any] = [
         "jsonrpc": "2.0",
         "id": id,
@@ -48,7 +48,7 @@ private func makeResponseBody(id: String = "2") -> Data {
     return try! JSONSerialization.data(withJSONObject: json)
 }
 
-private func makeStatefulPOSTRequest(
+func makeStatefulPOSTRequest(
     body: Data,
     sessionID: String? = nil,
     authorization: String? = nil
@@ -66,7 +66,7 @@ private func makeStatefulPOSTRequest(
     return HTTPRequest(method: "POST", headers: headers, body: body)
 }
 
-private func makeGETRequest(sessionID: String, lastEventID: String? = nil) -> HTTPRequest {
+func makeGETRequest(sessionID: String, lastEventID: String? = nil) -> HTTPRequest {
     var headers: [String: String] = [
         "Accept": "text/event-stream",
         "Mcp-Session-Id": sessionID,
@@ -133,7 +133,7 @@ private func makeStatelessTransport() -> StatelessHTTPServerTransport {
 }
 
 /// Drains an SSE stream, collecting raw SSE chunks.
-private actor ChunkCollector {
+actor ChunkCollector {
     var chunks: [Data] = []
     func append(_ data: Data) { chunks.append(data) }
     func getChunks() -> [Data] { chunks }
@@ -160,7 +160,7 @@ private func drainSSEStream(
 
 /// Initializes a stateful transport session and returns the session ID.
 /// Spawns a background task to consume the receive stream and send the init response.
-private func initializeSession(
+func initializeSession(
     transport: StatefulHTTPServerTransport,
     sessionID: String? = nil
 ) async throws -> String {
