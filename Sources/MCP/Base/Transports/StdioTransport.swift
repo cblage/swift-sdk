@@ -58,6 +58,10 @@ import struct Foundation.Data
         private var disconnectTask: Task<Void, Never>?
         private var activeSends = 0
         private var sendsDrained: CheckedContinuation<Void, Never>?
+        private var nextSendID = 0
+        private var currentSendID = 0
+        private var sendWaiters: [Int: CheckedContinuation<Void, Swift.Error>] = [:]
+        private var hasIncompleteOutput = false
         private let messageStream: AsyncThrowingStream<Data, Swift.Error>
         private let messageContinuation: AsyncThrowingStream<Data, Swift.Error>.Continuation
         private struct DescriptorState {
@@ -102,6 +106,10 @@ import struct Foundation.Data
         public func connect() async throws {
             await disconnectTask?.value
             guard !isConnected else { return }
+            // The output has part of a line; a new message would join that incomplete line.
+            guard !hasIncompleteOutput else {
+                throw MCPError.transportError(Errno(rawValue: ENOTCONN))
+            }
 
             // Set non-blocking mode
             let originalInputState = try setNonBlocking(fileDescriptor: input)
@@ -218,12 +226,19 @@ import struct Foundation.Data
         ///
         /// This stops the message reading loop and releases associated resources.
         public func disconnect() async {
+            await beginDisconnect()?.value
+        }
+
+        private func beginDisconnect() -> Task<Void, Never>? {
             if let disconnectTask {
-                await disconnectTask.value
-                return
+                return disconnectTask
             }
-            guard isConnected else { return }
+            guard isConnected else { return nil }
             isConnected = false
+            for continuation in sendWaiters.values {
+                continuation.resume(throwing: MCPError.transportError(Errno(rawValue: ENOTCONN)))
+            }
+            sendWaiters.removeAll()
             let read = readTask
             read?.cancel()
             let cleanup = Task {
@@ -239,11 +254,11 @@ import struct Foundation.Data
                 outputState = nil
                 readTask = nil
                 messageContinuation.finish()
+                disconnectTask = nil
+                logger.debug("Transport disconnected")
             }
             disconnectTask = cleanup
-            await cleanup.value
-            disconnectTask = nil
-            logger.debug("Transport disconnected")
+            return cleanup
         }
 
         /// Sends a message over the transport.
@@ -267,28 +282,73 @@ import struct Foundation.Data
                 }
             }
 
+            let sendID = nextSendID
+            nextSendID += 1
+            if sendID != currentSendID {
+                try await withTaskCancellationHandler {
+                    try Task.checkCancellation()
+                    try await withCheckedThrowingContinuation { continuation in
+                        sendWaiters[sendID] = continuation
+                    }
+                } onCancel: {
+                    Task { await self.cancelWaitingSend(sendID) }
+                }
+            }
+            defer { finishSend() }
+
             // Add newline as delimiter
             var messageWithNewline = message
             messageWithNewline.append(UInt8(ascii: "\n"))
 
             var remaining = messageWithNewline
-            while !remaining.isEmpty {
-                guard isConnected else {
-                    throw MCPError.transportError(Errno(rawValue: ENOTCONN))
-                }
-                do {
-                    let written = try remaining.withUnsafeBytes { buffer in
-                        try output.write(UnsafeRawBufferPointer(buffer))
+            do {
+                while !remaining.isEmpty {
+                    guard isConnected else {
+                        throw MCPError.transportError(Errno(rawValue: ENOTCONN))
                     }
-                    if written > 0 {
-                        remaining = remaining.dropFirst(written)
+                    do {
+                        let written = try remaining.withUnsafeBytes { buffer in
+                            try output.write(UnsafeRawBufferPointer(buffer))
+                        }
+                        if written > 0 {
+                            remaining = remaining.dropFirst(written)
+                        }
+                    } catch let error where MCPError.isResourceTemporarilyUnavailable(error) {
+                        if remaining.count == messageWithNewline.count {
+                            try await Task.sleep(for: .milliseconds(10))
+                        } else {
+                            // A fresh task keeps cancellation from truncating a started line
+                            // or turning the backpressure wait into a busy loop.
+                            await Task {
+                                try? await Task.sleep(for: .milliseconds(10))
+                            }.value
+                        }
+                    } catch {
+                        throw MCPError.transportError(error)
                     }
-                } catch let error where MCPError.isResourceTemporarilyUnavailable(error) {
-                    try await Task.sleep(for: .milliseconds(10))
-                    continue
-                } catch {
-                    throw MCPError.transportError(error)
                 }
+            } catch {
+                if remaining.count < messageWithNewline.count {
+                    hasIncompleteOutput = true
+                    _ = beginDisconnect()
+                }
+                throw error
+            }
+        }
+
+        private func cancelWaitingSend(_ sendID: Int) {
+            sendWaiters.removeValue(forKey: sendID)?.resume(throwing: CancellationError())
+        }
+
+        private func finishSend() {
+            currentSendID += 1
+            // Visit each ticket once, skipping cancelled or disconnected waiters.
+            while currentSendID < nextSendID {
+                if let continuation = sendWaiters.removeValue(forKey: currentSendID) {
+                    continuation.resume()
+                    return
+                }
+                currentSendID += 1
             }
         }
 
