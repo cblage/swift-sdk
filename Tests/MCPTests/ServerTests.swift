@@ -53,6 +53,50 @@ struct ServerTests {
         await transport.disconnect()
     }
 
+    @Test("Raw initialize accepts object-valued experimental capabilities", .timeLimit(.minutes(1)))
+    func testServerInitializeExperimentalCapabilities() async throws {
+        let (clientTransport, serverTransport) = await InMemoryTransport.createConnectedPair()
+        let server = Server(name: "TestServer", version: "1.0")
+        do {
+            try await clientTransport.connect()
+            try await server.start(transport: serverTransport)
+            var iterator = await clientTransport.receive().makeAsyncIterator()
+            let request = Data(
+                """
+                {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "initialize",
+                    "params": {
+                        "protocolVersion": "2025-11-25",
+                        "capabilities": {
+                            "elicitation": {},
+                            "experimental": {"example/feature": {"version": "1.0.0"}}
+                        },
+                        "clientInfo": {"name": "TestClient", "version": "1.0"}
+                    }
+                }
+                """.utf8)
+            try await clientTransport.send(request)
+
+            let data = try #require(try await iterator.next())
+            let response = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+            #expect(response["jsonrpc"] as? String == "2.0")
+            #expect(response["id"] as? Int == 1)
+            #expect(response["error"] == nil)
+            let result = try #require(response["result"] as? [String: Any])
+            #expect(result["protocolVersion"] as? String == "2025-11-25")
+            let info = try #require(result["serverInfo"] as? [String: Any])
+            #expect(info["name"] as? String == "TestServer")
+        } catch {
+            await server.stop()
+            await clientTransport.disconnect()
+            throw error
+        }
+        await server.stop()
+        await clientTransport.disconnect()
+    }
+
     @Test("Initialize response includes server metadata")
     func testServerInitializeMetadata() async throws {
         let transport = MockTransport()

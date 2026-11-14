@@ -5,6 +5,41 @@ import Testing
 
 @Suite("Client Tests", .timeLimit(.minutes(1)))
 struct ClientTests {
+    @Test(
+        "Initialize parameters preserve experimental capability JSON",
+        arguments: [
+            #"{"example/feature":{"version":"1.0.0","options":[true,7,null]}}"#,
+            #"{"example/feature":"enabled"}"#,
+            nil,
+        ] as [String?]
+    )
+    func testInitializeExperimentalCapabilitiesWireFormat(experimentalJSON: String?) throws {
+        let capabilitiesJSON = experimentalJSON.map { #"{"experimental":\#($0)}"# } ?? "{}"
+        let data = Data(
+            """
+            {
+                "protocolVersion": "2025-11-25",
+                "capabilities": \(capabilitiesJSON),
+                "clientInfo": {"name": "TestClient", "version": "1.0"}
+            }
+            """.utf8)
+
+        let parameters = try JSONDecoder().decode(Initialize.Parameters.self, from: data)
+        let encoded = try JSONEncoder().encode(parameters)
+        let expected = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let actual = try #require(JSONSerialization.jsonObject(with: encoded) as? NSDictionary)
+        #expect(actual.isEqual(to: expected))
+    }
+
+    @Test("Experimental capability string literals keep their JSON representation")
+    func testExperimentalCapabilityStringLiteral() throws {
+        let capabilities = Client.Capabilities(experimental: ["example/feature": "enabled"])
+        let data = try JSONEncoder().encode(capabilities)
+        let json = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let experimental = try #require(json["experimental"] as? [String: String])
+        #expect(experimental == ["example/feature": "enabled"])
+    }
+
     @Test("Client connect and disconnect")
     func testClientConnectAndDisconnect() async throws {
         let transport = MockTransport()

@@ -116,6 +116,17 @@ if result.capabilities.tools != nil {
 > This return value is discardable, 
 > so you can ignore it if you don't need to check server capabilities.
 
+`Client.Capabilities.experimental` accepts `[String: Value]?`, including object-valued extensions:
+
+```swift
+let capabilities = Client.Capabilities(
+    experimental: ["example/feature": ["version": "1.0.0"]]
+)
+```
+
+Dictionary literals with text values, such as `["example/feature": "enabled"]`, also work.
+Convert a typed `[String: String]` dictionary with `values.mapValues { Value.string($0) }`, and read text values through `.stringValue`.
+
 ### Transport Options for Clients
 
 #### Stdio Transport
